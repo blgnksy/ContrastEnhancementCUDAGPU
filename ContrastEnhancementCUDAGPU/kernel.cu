@@ -62,7 +62,7 @@ void MinMaxKernel(Npp8u *pSrc_Dev, Npp8u *pMin_Dev, Npp8u *pMax_Dev, int   nWidt
 	int tid = threadIdx.x; 
 	unsigned int gid = blockIdx.x*blockDim.x + threadIdx.x; 
 	while (gid < 5) {
-		sMin[tid] = pSrc_Dev[gid*]; 
+		sMin[tid] = pSrc_Dev[gid]; 
 	}
 	__syncthreads();
 	
