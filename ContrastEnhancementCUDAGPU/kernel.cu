@@ -34,11 +34,18 @@
 #include <device_functions.h>
 #include "npp.h"
 
-#define CUDA_CALL(x) {if((x) != cudaSuccess){ \
-  printf("CUDA error at %s:%d\n",__FILE__,__LINE__); \
-  printf("  %s\n", cudaGetErrorString(cudaGetLastError())); \
-  system("Pause");\
-  exit(EXIT_FAILURE);}}
+#define CUDA_CALL(x) \
+{\
+  if((x) != cudaSuccess){ \
+      printf("CUDA error at %s:%d\n",__FILE__,__LINE__); \
+      printf("  %s\n", cudaGetErrorString(cudaGetLastError())); \
+      system("Pause");\
+      exit(EXIT_FAILURE);\
+  }\
+  else {\
+      printf("CUDA Success at %d\n",__LINE__);\
+  }\
+}
 
 // Function declarations.
 Npp8u *
@@ -47,30 +54,51 @@ LoadPGM(char * sFileName, int & nWidth, int & nHeight, int & nMaxGray);
 void
 WritePGM(char * sFileName, Npp8u * pDst_Host, int nWidth, int nHeight, int nMaxGray);
 
-__global__
-void MinMaxKernel(Npp8u *pSrc_Dev, Npp8u *pMin_Dev, Npp8u *pMax_Dev, int   nWidth, int nHeight) {
-	extern __shared__ Npp8u sMin[]; 
-	unsigned int tid = threadIdx.x;
-	unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
-	sMin[tid] = pSrc_Dev[i];
-	__syncthreads();
 
-	pMin_Dev = &sMin[200];
+__global__
+void MinMaxKernel(Npp8u *pSrc_Dev, Npp8u *pMin_Dev, Npp8u *pMax_Dev, int   nWidth, int nHeight)
+{
+	extern __shared__ Npp8u sMin[]; 
+	int tid = threadIdx.x; 
+	unsigned int gid = blockIdx.x*blockDim.x + threadIdx.x; 
+	while (gid < 5) {
+		sMin[tid] = pSrc_Dev[gid*]; 
+	}
+	__syncthreads();
+	
+
+	/*if (gid<5)
+	{
+		sMin[tid] = pSrc_Dev[gid*nWidth];
+	}	
+	__syncthreads();
+	for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1)
+	{
+		if (tid < s && gid < 512) {
+			if (sMin[5] <= sMin[0])
+			{
+				sMin[0] = sMin[5];
+			}
+		}
+		__syncthreads();
+	}*/
+	*pMin_Dev = sMin[0];
 }
 // Main function.
 int
 main(int argc, char ** argv)
 {
 	// Host parameter declarations.	
-	Npp8u * pSrc_Host, *pDst_Host;
+	Npp8u *pSrc_Host, *pDst_Host;
 	int   nWidth, nHeight, nMaxGray;
-	Npp8u    nMin_Host, nMax_Host;
+	Npp8u    *pMin_Host, *pMax_Host;
 
 	// Load image to the host.
 	std::cout << "Load PGM file." << std::endl;
 	pSrc_Host = LoadPGM("C:\\Users\\blgnksy\\source\\repos\\CudaAssignment2\\ColorEnhancement\\lena_before.pgm", nWidth, nHeight, nMaxGray);
 	pDst_Host = new Npp8u[nWidth * nHeight];
-
+	pMin_Host=(Npp8u*)malloc(sizeof(Npp8u));
+	pMax_Host = (Npp8u*)malloc(sizeof(Npp8u));
 	// Device parameter declarations.
 	Npp8u	 * pSrc_Dev, *pDst_Dev;
 	Npp8u    * pMin_Dev, *pMax_Dev;
@@ -84,42 +112,48 @@ main(int argc, char ** argv)
 	//oROI.height = nHeight;
 	pSrc_Dev = nppiMalloc_8u_C1(nWidth, nHeight, &nSrcStep_Dev);
 	pDst_Dev = nppiMalloc_8u_C1(nWidth, nHeight, &nDstStep_Dev);
+
+	//CUDA_CALL(cudaMalloc((void **)&pSrc_Dev, nWidth * nHeight * sizeof(Npp8u)));
+	//CUDA_CALL(cudaMalloc((void **)&pDst_Dev, nWidth*nHeight * sizeof(Npp8u)));
 	std::cout << "Copy image from host to device." << std::endl;
 	cudaMemcpy2D(pSrc_Dev, nSrcStep_Dev, pSrc_Host, nWidth, nWidth, nHeight, cudaMemcpyHostToDevice);
 	std::cout << "Process the image on GPU." << std::endl;
+
 	// Allocate device buffer for the MinMax primitive -- this is only necessary for nppi, we can simply return into nMin_Host and n_Max_Host
 	//cudaMalloc(reinterpret_cast<void **>(&pMin_Dev), sizeof(Npp8u)); // You won't need these lines
 	//cudaMalloc(reinterpret_cast<void **>(&pMax_Dev), sizeof(Npp8u)); // You won't need these lines
 	//nppiMinMaxGetBufferHostSize_8u_C1R(oROI, &nBufferSize_Host);  // You won't need these lines 
 	//cudaMalloc(reinterpret_cast<void **>(&pBuffer_Dev), nBufferSize_Host); // You won't need these lines
-	cudaMalloc((void **)&pMin_Dev, sizeof(Npp8u));
-	cudaMemcpy(pMin_Dev, &nMin_Host, sizeof(Npp8u), cudaMemcpyHostToDevice);
-	cudaMalloc((void **)&pMax_Dev, sizeof(Npp8u));
-	cudaMemcpy(pMax_Dev, &nMax_Host, sizeof(Npp8u), cudaMemcpyHostToDevice);
+
+	CUDA_CALL(cudaMalloc((void **)&pMin_Dev, sizeof(Npp8u)));
+	CUDA_CALL(cudaMemcpy(pMin_Dev, &pMin_Host, sizeof(Npp8u), cudaMemcpyHostToDevice));
+	CUDA_CALL(cudaMalloc((void **)&pMax_Dev, sizeof(Npp8u)));
+	CUDA_CALL(cudaMemcpy(pMax_Dev, &pMax_Host, sizeof(Npp8u), cudaMemcpyHostToDevice));
 
 	// REPLACE THIS PART WITH YOUR KERNELs
 	// Compute the min and the max.
 	//nppiMinMax_8u_C1R(pSrc_Dev, nSrcStep_Dev, oROI, pMin_Dev, pMax_Dev, pBuffer_Dev); // // Replace this line with your KERNEL1 call (KERNEL1: your kernel calculating the minimum and maximum values and returning them here)
-	dim3 dimBlock(1, 1);
-	dim3 dimGrid(1, 1);
+	dim3 dimBlock(128, 1);
+	dim3 dimGrid(512, 1);
 
-	MinMaxKernel << < dimGrid, dimBlock >> > (pSrc_Dev, pMin_Dev, pMax_Dev, nWidth, nHeight);
+	MinMaxKernel <<< dimGrid, dimBlock >>> (pSrc_Dev, pMin_Dev, pMax_Dev, nWidth, nHeight);
 
-	cudaMemcpy(&nMin_Host, pMin_Dev, sizeof(Npp8u), cudaMemcpyDeviceToHost); // You won't need these lines to get the min and max. Return nMin_Host from your kernel function 
-	cudaMemcpy(&nMax_Host, pMax_Dev, sizeof(Npp8u), cudaMemcpyDeviceToHost); // You won't need these lines to get the min and max. Return nMax_Host from your kernel function
-	printf("Minimum %d\n",nMin_Host);
+	CUDA_CALL(cudaMemcpy(pMin_Host, pMin_Dev, sizeof(Npp8u), cudaMemcpyDeviceToHost)); // You won't need these lines to get the min and max. Return nMin_Host from your kernel function 
+	CUDA_CALL(cudaMemcpy(pMax_Host, pMax_Dev, sizeof(Npp8u), cudaMemcpyDeviceToHost)); // You won't need these lines to get the min and max. Return nMax_Host from your kernel function
+	printf("Minimum %d\n", pMin_Host);
+
 	// Call SubC primitive.
 	//nppiSubC_8u_C1RSfs(pSrc_Dev, nSrcStep_Dev, nMin_Host, pDst_Dev, nDstStep_Dev, oROI, 0); // Replace this line with your KERNEL2 call (KERNEL2: your kernel subtracting the nMin_Host from all the pixels)
 
 	// Compute the optimal nConstant and nScaleFactor for integer operation see GTC 2013 Lab NPP.pptx for explanation
 	int nScaleFactor = 0;
 	int nPower = 1;
-	while (nPower * 255.0f / (nMax_Host - nMin_Host) < 255.0f)
+	while (nPower * 255.0f / (pMax_Host - pMin_Host) < 255.0f)
 	{
 		nScaleFactor++;
 		nPower *= 2;
 	}
-	Npp8u nConstant = static_cast<Npp8u>(255.0f / (nMax_Host - nMin_Host) * (nPower / 2)); //you won't need these calculations
+	Npp8u nConstant = static_cast<Npp8u>(255.0f / (pMax_Host - pMin_Host) * (nPower / 2)); //you won't need these calculations
 
 	// Call MulC primitive.
 	//nppiMulC_8u_C1IRSfs(nConstant, pDst_Dev, nDstStep_Dev, oROI, nScaleFactor - 1); // Replace this line with your KERNEL3 call (KERNEL3: your kernel multiplying all the pixels with the nConstant and then dividing them by nScaleFactor -1 to achieve: 255/(nMax_Host-nMinHost)))
