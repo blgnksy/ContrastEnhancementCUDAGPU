@@ -28,7 +28,7 @@ void
 WritePGM(char * sFileName, Npp8u * pDst_Host, int nWidth, int nHeight, int nMaxGray);
 
 __global__ void
-MinMaxKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev, Npp8u * pMax_Dev);
+MinMaxKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev, Npp8u * pMax_Dev, int   nWidth);
 
 __global__ void
 SubtractKernel(Npp8u * pDst_Dev, Npp8u * pSrc_Dev, Npp8u nMin_Dev);
@@ -84,8 +84,8 @@ main(int argc, char ** argv)
 	size_t sharedMemSize = nHeight *  nWidth * sizeof(Npp8u);
 
 	// One kernel for both min and max.
-	MinMaxKernel << <dimGrid, dimBlock2, sharedMemSize >> > (pSrc_Dev, pMin_Dev, pMax_Dev);
-	MinMaxKernel << <1, dimBlock1, sharedMemSize >> > (pMin_Dev, pMin_Dev, pMax_Dev);
+	MinMaxKernel << <dimGrid, dimBlock1, sharedMemSize >> > (pSrc_Dev, pMin_Dev, pMax_Dev, nWidth);
+	//MinMaxKernel << <1, dimBlock1, sharedMemSize >> > (pMin_Dev, pMin_Dev, pMax_Dev);
 
 	// Minimum and maximum values are copied to host.
 	CUDA_CALL(cudaMemcpy(&nMin_Host, pMin_Dev, sizeof(Npp8u), cudaMemcpyDeviceToHost), "Memory copied.(DeviceToHost)");
@@ -197,13 +197,13 @@ WritePGM(char * sFileName, Npp8u * pDst_Host, int nWidth, int nHeight, int nMaxG
 
 //
 __global__ void
-MinMaxKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev, Npp8u * pMax_Dev)
+MinMaxKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev, Npp8u * pMax_Dev, int nWidth)
 {
 	extern __shared__ Npp8u sMin[];
 	extern __shared__ Npp8u sMax[];
 	unsigned int tid = threadIdx.x;
-	unsigned int gid = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
-	if (gid < 512)
+	unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
+	if (gid < nWidth)
 	{
 		if (pSrc_Dev[gid] > pSrc_Dev[gid + blockDim.x])
 		{
