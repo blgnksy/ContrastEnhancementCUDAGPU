@@ -36,10 +36,6 @@ SubtractKernel(Npp8u * pDst_Dev, Npp8u * pSrc_Dev, Npp8u nMin_Dev);
 __global__ void
 MultiplyKernel(Npp8u * pDst_Dev, Npp8u nConstant, int normalizer);
 
-void StartCounter();
-
-double GetCounter();
-
 
 int
 main(int argc, char ** argv)
