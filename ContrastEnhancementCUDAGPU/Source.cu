@@ -6,7 +6,6 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "npp.h"
-#include <assert.h>
 #include <math.h>
 #include <windows.h>
 
@@ -17,10 +16,11 @@
   exit(EXIT_FAILURE);}\
   else{printf("CUDA Success at %d. (%s)\n",__LINE__,y); }}
 
-//Global
-#define DIM 256
 
-// Function Prototypes.
+//Global  declaration
+#define DIM 512
+
+// Function Protypes.
 Npp8u *
 LoadPGM(char * sFileName, int & nWidth, int & nHeight, int & nMaxGray);
 
@@ -28,25 +28,32 @@ void
 WritePGM(char * sFileName, Npp8u * pDst_Host, int nWidth, int nHeight, int nMaxGray);
 
 __global__ void
-MinMaxKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev, Npp8u * pMax_Dev, int   nWidth);
+MinimumKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev);
+
+__global__ void
+MaximumKernel(Npp8u * pSrc_Dev, Npp8u * pMax_Dev);
 
 __global__ void
 SubtractKernel(Npp8u * pDst_Dev, Npp8u * pSrc_Dev, Npp8u nMin_Dev);
 
 __global__ void
-MultiplyKernel(Npp8u * pDst_Dev, Npp8u nConstant, int normalizer);
+MultiplyKernel(Npp8u * pDst_Dev, Npp8u nConstant, int nNormalizer);
 
 
+
+// Main function.
 int
 main(int argc, char ** argv)
 {
 	// Host parameter declarations.	
 	Npp8u * pSrc_Host, *pDst_Host;
-	int   nWidth, nHeight, nMaxGray;
+	int   nWidth, nHeight, nMaxGray, nNormalizer;
+
+	std::cout << "GPU VERSION" << std::endl;
 
 	// Load image to the host.
 	std::cout << "Load PGM file." << std::endl;
-	pSrc_Host = LoadPGM("C:\\Users\\blgnksy\\source\\repos\\CudaAssignment2\\ColorEnhancement\\lena_before.pgm", nWidth, nHeight, nMaxGray);
+	pSrc_Host = LoadPGM("lena_before.pgm", nWidth, nHeight, nMaxGray);
 	pDst_Host = new Npp8u[nWidth * nHeight];
 
 	// Device parameter declarations.
@@ -62,43 +69,46 @@ main(int argc, char ** argv)
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
 
-	// Allocate and Copy the Device Variables
+	// Allocate Device variables and copy the image from the host to GPU
 	pSrc_Dev = nppiMalloc_8u_C1(nWidth, nHeight, &nSrcStep_Dev);
 	pDst_Dev = nppiMalloc_8u_C1(nWidth, nHeight, &nDstStep_Dev);
-
-	// Device variables are copied to device. 
-	CUDA_CALL(cudaMalloc(&pMin_Dev, DIM * sizeof(Npp8u)), "Memory allocated.");
-	CUDA_CALL(cudaMalloc(&pMax_Dev, DIM * sizeof(Npp8u)), "Memory allocated.");
+	CUDA_CALL(cudaMalloc(&pMin_Dev, sizeof(Npp8u) * DIM), "Memory allocated.");
+	CUDA_CALL(cudaMalloc(&pMax_Dev, sizeof(Npp8u) * DIM), "Memory allocated.");
+	std::cout << "Copy image from host to device." << std::endl;
 	CUDA_CALL(cudaMemcpy(pSrc_Dev, pSrc_Host, nWidth * nHeight * sizeof(Npp8u), cudaMemcpyHostToDevice), "Memory copied.(HostToDevice)");
+
+	std::cout << "Process the image on GPU." << std::endl;
 
 	/*
 	Defining Kernel Execution Paramaters.
 	I defined two different block size to be able to find global minimum. During the First Max and Min kernels execution, they are only
-	be able to find local minimum.
+	be able to find local minimum. Credits:  http://www.dmi.unict.it/~bilotta/gpgpu/notes/07-some-vector-examples.html
 	*/
 	dim3 dimGrid(nWidth);
-	dim3 dimBlock2(nWidth / 2);
-	dim3 dimBlock1(nWidth);
+	dim3 dimBlockMinMax(nWidth / 2);
+	dim3 dimBlock(nWidth);
+	
+	//Min and max kernel are independent. So they will run async.
+	size_t sharedMemSize = nWidth * sizeof(Npp8u);
+	cudaStream_t stream1, stream2;
+	cudaStreamCreate(&stream1);
+	cudaStreamCreate(&stream2);
 
-	//Minimum kernel and Maximum kernels are independent. So no need to put them into same stream.
-	size_t sharedMemSize = nHeight *  nWidth * sizeof(Npp8u);
+	// Compute the min and the max.
+	MinimumKernel << <dimGrid, dimBlockMinMax, sharedMemSize, stream1 >> > (pSrc_Dev, pMin_Dev);
+	MaximumKernel << <dimGrid, dimBlockMinMax, sharedMemSize, stream2 >> > (pSrc_Dev, pMax_Dev);
+	MinimumKernel << <1, dimBlockMinMax, sharedMemSize, stream1 >> > (pMin_Dev, pMin_Dev);
+	MaximumKernel << <1, dimBlockMinMax, sharedMemSize, stream2 >> > (pMax_Dev, pMax_Dev);
 
-	// One kernel for both min and max.
-	MinMaxKernel << <dimGrid, dimBlock1, sharedMemSize >> > (pSrc_Dev, pMin_Dev, pMax_Dev, nWidth);
-	//MinMaxKernel << <1, dimBlock1, sharedMemSize >> > (pMin_Dev, pMin_Dev, pMax_Dev);
+	// get max and min to host
+	CUDA_CALL(cudaMemcpy(&nMin_Host, pMin_Dev, sizeof(Npp8u) * 512, cudaMemcpyDeviceToHost), "Memory copied.(DeviceToHost)");
+	CUDA_CALL(cudaMemcpy(&nMax_Host, pMax_Dev, sizeof(Npp8u) * 512, cudaMemcpyDeviceToHost), "Memory copied.(DeviceToHost)");
 
-	// Minimum and maximum values are copied to host.
-	CUDA_CALL(cudaMemcpy(&nMin_Host, pMin_Dev, sizeof(Npp8u), cudaMemcpyDeviceToHost), "Memory copied.(DeviceToHost)");
-	CUDA_CALL(cudaMemcpy(&nMax_Host, pMax_Dev, sizeof(Npp8u), cudaMemcpyDeviceToHost), "Memory copied.(DeviceToHost)");
+	// Subtract Min
+	SubtractKernel << <dimGrid, dimBlock, 0, stream1 >> > (pDst_Dev, pSrc_Dev, nMin_Host[0]);
 
-	//Just for control.
-	assert(nMin_Host[0] = 92);
-	assert(nMax_Host[0] = 202);
-
-	// Subtracting the minimum
-	SubtractKernel << <dimGrid, dimBlock1 >> > (pDst_Dev, pSrc_Dev, nMin_Host[0]);
-
-	// Provided code from Original work.
+	// Compute the optimal nConstant and nScaleFactor for integer operation see GTC 2013 Lab NPP.pptx for explanation
+	// I will prefer integer arithmetic, Instead of using 255.0f / (nMax_Host - nMin_Host) directly
 	int nScaleFactor = 0;
 	int nPower = 1;
 	while (nPower * 255.0f / (nMax_Host[0] - nMin_Host[0]) < 255.0f)
@@ -109,22 +119,21 @@ main(int argc, char ** argv)
 	Npp8u nConstant = static_cast<Npp8u>(255.0f / (nMax_Host[0] - nMin_Host[0]) * (nPower / 2));
 
 	// CUDA Kernel doesn't support these calculation. So that I calculated it outside the kernel. 
-	int normalizer = pow(2, (nScaleFactor - 1));
+	nNormalizer = pow(2, (nScaleFactor - 1));
+	
+	// Multiply Kernel
+	MultiplyKernel << <dimGrid, dimBlock, 0, stream1 >> > (pDst_Dev, nConstant, nNormalizer);
 
-	// Multiply constant and 
-	MultiplyKernel << <dimGrid, dimBlock1 >> > (pDst_Dev, nConstant, normalizer);
-
+	// Copy result back to the host.
+	std::cout << "Work done! Copy the result back to host." << std::endl;
 	CUDA_CALL(cudaMemcpy(pDst_Host, pDst_Dev, nWidth * nHeight * sizeof(Npp8u), cudaMemcpyDeviceToHost), "Memory copied.(DeviceToHost)");
-	cudaEventRecord(stop, 0);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&elapsed_time_ms, start, stop);
-	printf("Time to calculate results(GPU Time): %f ms.\n", elapsed_time_ms);
 
 	// Output the result image.
 	std::cout << "Output the PGM file." << std::endl;
-	WritePGM("C:\\Users\\blgnksy\\source\\repos\\CudaAssignment2\\ColorEnhancement\\lena_after_GPU.pgm", pDst_Host, nWidth, nHeight, nMaxGray);
+	WritePGM("lena_after_GPUs.pgm", pDst_Host, nWidth, nHeight, nMaxGray);
 
 	// Clean up.
+	std::cout << "Clean up." << std::endl;
 	delete[] pSrc_Host;
 	delete[] pDst_Host;
 
@@ -187,7 +196,7 @@ WritePGM(char * sFileName, Npp8u * pDst_Host, int nWidth, int nHeight, int nMaxG
 		perror("Cannot open file to read");
 		exit(EXIT_FAILURE);
 	}
-	char * aComment = "# Created by CUDA Assignment II";
+	char * aComment = "# Created by NPP";
 	fprintf(fOutput, "P5\n%s\n%d %d\n%d\n", aComment, nWidth, nHeight, nMaxGray);
 	for (int i = 0; i < nHeight; ++i)
 		for (int j = 0; j < nWidth; ++j)
@@ -195,35 +204,32 @@ WritePGM(char * sFileName, Npp8u * pDst_Host, int nWidth, int nHeight, int nMaxG
 	fclose(fOutput);
 }
 
-//
 __global__ void
-MinMaxKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev, Npp8u * pMax_Dev, int nWidth)
+MinimumKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev)
 {
 	extern __shared__ Npp8u sMin[];
-	extern __shared__ Npp8u sMax[];
 	unsigned int tid = threadIdx.x;
-	unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;
-	if (gid < nWidth)
+	unsigned int gid = blockIdx.x * blockDim.x  + threadIdx.x;
+
+	//Warp Reducing part. 
+	if (pSrc_Dev[gid] > pSrc_Dev[gid + blockDim.x])
 	{
-		if (pSrc_Dev[gid] > pSrc_Dev[gid + blockDim.x])
-		{
-			sMin[tid] = pSrc_Dev[gid + blockDim.x];
-			sMax[tid] = pSrc_Dev[gid];
-		}
-		else
-		{
-			sMin[tid] = pSrc_Dev[gid];
-			sMax[tid] = pSrc_Dev[gid + blockDim.x];
-		}
-		__syncthreads();
+		sMin[tid] = pSrc_Dev[gid + blockDim.x];
 	}
-	for (unsigned int s = blockDim.x / 2; s > 32; s >>= 1)
+	else
+	{
+		sMin[tid] = pSrc_Dev[gid];
+	}
+	__syncthreads();
+
+	//Parallel Reduction. It is very similar to the example given in the lecture.
+	for (unsigned int s = blockDim.x / 2; s>32; s >>= 1)
 	{
 		if (tid < s)
 			if (sMin[tid] > sMin[tid + s]) sMin[tid] = sMin[tid + s];
-		if (sMax[tid] < sMax[tid + s]) sMax[tid] = sMax[tid + s];
 		__syncthreads();
 	}
+
 	if (tid < 32)
 	{
 		if (sMin[tid] > sMin[tid + 32]) sMin[tid] = sMin[tid + 32];
@@ -232,7 +238,35 @@ MinMaxKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev, Npp8u * pMax_Dev, int nWidth)
 		if (sMin[tid] > sMin[tid + 4]) sMin[tid] = sMin[tid + 4];
 		if (sMin[tid] > sMin[tid + 2]) sMin[tid] = sMin[tid + 2];
 		if (sMin[tid] > sMin[tid + 1]) sMin[tid] = sMin[tid + 1];
+	}
+	if (tid == 0) pMin_Dev[blockIdx.x] = sMin[0];
+}
 
+__global__ void
+MaximumKernel(Npp8u * pSrc_Dev, Npp8u * pMax_Dev)
+{
+	extern __shared__ Npp8u sMax[];
+	unsigned int tid = threadIdx.x;
+	unsigned int i = blockIdx.x * blockDim.x  + threadIdx.x;
+	//Warp Reducing part.
+	if (pSrc_Dev[i] < pSrc_Dev[i + blockDim.x])
+	{
+		sMax[tid] = pSrc_Dev[i + blockDim.x];
+	}
+	else
+	{
+		sMax[tid] = pSrc_Dev[i];
+	}
+	__syncthreads();
+	//Parallel Reduction. It is very similar to the example given in the lecture.
+	for (unsigned int s = blockDim.x / 2; s>32; s >>= 1)
+	{
+		if (tid < s)
+			if (sMax[tid] < sMax[tid + s]) sMax[tid] = sMax[tid + s];
+		__syncthreads();
+	}
+	if (tid < 32)
+	{
 		if (sMax[tid] < sMax[tid + 32]) sMax[tid] = sMax[tid + 32];
 		if (sMax[tid] < sMax[tid + 16]) sMax[tid] = sMax[tid + 16];
 		if (sMax[tid] < sMax[tid + 8]) sMax[tid] = sMax[tid + 8];
@@ -240,14 +274,9 @@ MinMaxKernel(Npp8u * pSrc_Dev, Npp8u * pMin_Dev, Npp8u * pMax_Dev, int nWidth)
 		if (sMax[tid] < sMax[tid + 2]) sMax[tid] = sMax[tid + 2];
 		if (sMax[tid] < sMax[tid + 1]) sMax[tid] = sMax[tid + 1];
 	}
-	if (tid == 0)
-	{
-		pMin_Dev[blockIdx.x] = sMin[0];
-		pMax_Dev[blockIdx.x] = sMax[0];
-	}
+	if (tid == 0) pMax_Dev[blockIdx.x] = sMax[0];
 }
 
-// Subtract Min from Source and set it to Destination
 __global__ void
 SubtractKernel(Npp8u * pDst_Dev, Npp8u * pSrc_Dev, Npp8u nMin_Dev)
 {
@@ -255,10 +284,9 @@ SubtractKernel(Npp8u * pDst_Dev, Npp8u * pSrc_Dev, Npp8u nMin_Dev)
 	pDst_Dev[i] = pSrc_Dev[i] - nMin_Dev;
 }
 
-// multiply by nConstant and divide by 2 ^ nScaleFactor-1
 __global__ void
-MultiplyKernel(Npp8u * pDst_Dev, Npp8u nConstant, int normalizer)
+MultiplyKernel(Npp8u * pDst_Dev, Npp8u nConstant, int nNormalizer)
 {
 	unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-	pDst_Dev[i] = static_cast<Npp8u>(pDst_Dev[i] * nConstant / normalizer);
+	pDst_Dev[i] = static_cast<Npp8u>(pDst_Dev[i] * nConstant / nNormalizer);
 }

@@ -150,6 +150,9 @@ ipch/
 *.vspx
 *.sap
 
+# Visual Studio Project Files
+*.vcxproj
+
 # TFS 2012 Local Workspace
 $tf/
 
@@ -319,3 +322,9 @@ paket-files/
 # Python Tools for Visual Studio (PTVS)
 __pycache__/
 *.pyc
+
+#PGM Images
+*.pgm
+
+#NSight
+*.nvact
