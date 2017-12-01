@@ -328,3 +328,5 @@ __pycache__/
 
 #NSight
 *.nvact
+*.jpg
+*.xml

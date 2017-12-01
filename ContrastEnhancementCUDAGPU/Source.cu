@@ -82,7 +82,9 @@ main(int argc, char ** argv)
 	/*
 	Defining Kernel Execution Paramaters.
 	I defined two different block size to be able to find global minimum. During the First Max and Min kernels execution, they are only
-	be able to find local minimum. Credits:  http://www.dmi.unict.it/~bilotta/gpgpu/notes/07-some-vector-examples.html
+	be able to find local minimum. Credits:  http://www.dmi.unict.it/~bilotta/gpgpu/notes/07-some-vector-examples.html 
+	"The most efficient approach uses two kernel launches, one with the amount of blocks necessary to saturate the hardware, 
+	the other with a single block to ‘finish up’ the reduction."
 	*/
 	dim3 dimGrid(nWidth);
 	dim3 dimBlockMinMax(nWidth / 2);
@@ -127,6 +129,11 @@ main(int argc, char ** argv)
 	// Copy result back to the host.
 	std::cout << "Work done! Copy the result back to host." << std::endl;
 	CUDA_CALL(cudaMemcpy(pDst_Host, pDst_Dev, nWidth * nHeight * sizeof(Npp8u), cudaMemcpyDeviceToHost), "Memory copied.(DeviceToHost)");
+
+	cudaEventRecord(stop, 0);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&elapsed_time_ms, start, stop);
+	printf("Time to calculate results(GPU Time): %f ms.\n", elapsed_time_ms);
 
 	// Output the result image.
 	std::cout << "Output the PGM file." << std::endl;
